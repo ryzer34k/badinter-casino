@@ -2579,7 +2579,8 @@ function renderLivret(){
 /* =================== Comptes joueurs + sauvegarde en ligne + classement (Supabase) =================== */
 // Clés publiques du projet Supabase : la clé « publishable/anon » est faite pour être dans le navigateur,
 // la sécurité vient des règles (RLS) de la base : chacun ne peut lire et modifier que SA sauvegarde.
-const LB_URL = '', LB_KEY = '';
+const LB_URL = 'https://fevgyiuxflxbuqkxyppr.supabase.co',
+  LB_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZldmd5aXV4Zmx4YnVxa3h5cHByIiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTQxNzI0NzMsImV4cCI6MjEwOTc0ODQ3M30.9-SETeEqjrPeM3VvpHSGIjmq8n5Z9oK-8nKIV9U1aPo';
 const LB = (() => {
   let sb = null, uid = null, state = 'off', cat = 'fortune', lastScore = 0, lastCloud = 0, rows = [], mode = 'login', busyAcc = false;
   const NAME_RE = /^[\p{L}\p{N} _-]{2,16}$/u, DOMAIN = '@joueurs.badinter-casino.app';
