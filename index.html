@@ -2597,6 +2597,9 @@ const LB = (() => {
         await new Promise((ok, ko) => { const s = document.createElement('script'); s.src = 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.js'; s.onload = ok; s.onerror = ko; document.head.appendChild(s); });
       }
       sb = window.supabase.createClient(LB_URL, LB_KEY, {auth: {persistSession: true, autoRefreshToken: true, storageKey: 'badinterCasino_auth'}});
+      // test de connexion : sur claude.ai les connexions vers la base sont bloquées
+      const probe = await sb.from('scores').select('user_id').limit(1);
+      if (probe.error && /fetch|network|load failed/i.test(probe.error.message || '')) throw new Error('bloqué');
       state = 'ready';
       const {data: {session}} = await sb.auth.getSession();
       if (session) await onLogin(session.user, false);
@@ -2653,14 +2656,14 @@ const LB = (() => {
       if (mode === 'signup'){
         if (pass !== $('#accPass2').value){ accMsg('Les deux mots de passe ne sont pas pareils.', true); return; }
         const {data, error} = await sb.auth.signUp({email: s + DOMAIN, password: pass, options: {data: {pseudo: name}}});
-        if (error){ accMsg(/registered|exists/i.test(error.message) ? 'Ce pseudo est déjà pris, choisis-en un autre.' : 'Création impossible : ' + error.message, true); return; }
+        if (error){ accMsg(/registered|exists/i.test(error.message) ? 'Ce pseudo est déjà pris, choisis-en un autre.' : /fetch|network/i.test(error.message) ? 'Pas de connexion au serveur. Les comptes marchent sur le site du jeu : https://ryzer34k.github.io/badinter-casino/' : 'Création impossible : ' + error.message, true); return; }
         if (!data.session){ accMsg('Compte créé, mais la connexion automatique n’a pas marché. Essaie de te connecter.', true); return; }
         S.pseudo = name;
         await onLogin(data.user, true);
         toast('Compte créé 🎉', `Bienvenue ${name} ! Ta partie actuelle est maintenant sauvegardée en ligne.`, 'var(--green)');
       } else {
         const {data, error} = await sb.auth.signInWithPassword({email: s + DOMAIN, password: pass});
-        if (error){ accMsg('Pseudo ou mot de passe incorrect.', true); return; }
+        if (error){ accMsg(/fetch|network/i.test(error.message) ? 'Pas de connexion au serveur. Les comptes marchent sur le site du jeu : https://ryzer34k.github.io/badinter-casino/' : 'Pseudo ou mot de passe incorrect.', true); return; }
         await onLogin(data.user, false);
         toast('Connecté', `Content de te revoir ${S.pseudo} !`, 'var(--green)');
       }
