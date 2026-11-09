@@ -2670,34 +2670,66 @@ function renderLivret(){
 }
 
 /* =================== Comptes joueurs + sauvegarde en ligne + classement (Supabase) =================== */
-// Clés publiques du projet Supabase : la clé « publishable/anon » est faite pour être dans le navigateur,
-// la sécurité vient des règles (RLS) de la base : chacun ne peut lire et modifier que SA sauvegarde.
+// Le jeu parle directement au serveur (aucune bibliothèque à télécharger, donc rien que les bloqueurs de pub puissent bloquer).
+// La clé « anon » est publique par conception : la sécurité vient des règles (RLS) de la base,
+// chacun ne peut lire et modifier que SA sauvegarde.
 const LB_URL = 'https://fevgyiuxflxbuqkxyppr.supabase.co',
   LB_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZldmd5aXV4Zmx4YnVxa3h5cHByIiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTQxNzI0NzMsImV4cCI6MjEwOTc0ODQ3M30.9-SETeEqjrPeM3VvpHSGIjmq8n5Z9oK-8nKIV9U1aPo';
 const LB = (() => {
-  let sb = null, uid = null, state = 'off', cat = 'fortune', lastScore = 0, lastCloud = 0, rows = [], mode = 'login', busyAcc = false;
-  const NAME_RE = /^[\p{L}\p{N} _-]{2,16}$/u, DOMAIN = '@joueurs.badinter-casino.app';
+  let uid = null, sess = null, state = 'off', why = '', cat = 'fortune', lastScore = 0, lastCloud = 0, rows = [], mode = 'login', busyAcc = false;
+  const AUTH_KEY = 'badinterCasino_session';
+  const NAME_RE = /^[\p{L}\p{N} _-]{2,16}$/u, DOMAIN = '@joueurs.badinter-casino.app', SITE = 'https://ryzer34k.github.io/badinter-casino/';
   const LABEL = {fortune: v => M(v), sky_best: v => '×' + fx(v), tower_best: v => v + ' étages', stars: v => v + ' ★'};
-  // le pseudo devient un identifiant interne (pas besoin d'e-mail pour jouer)
   const slug = n => n.toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/\s+/g, '-').replace(/[^a-z0-9_-]/g, '');
   const accMsg = (t, bad) => { const el = $('#accMsg'); el.textContent = t; el.style.color = bad ? 'var(--red)' : 'var(--muted)'; };
+  const onSite = () => /github\.io$/.test(location.hostname) || /^(127\.0\.0\.1|localhost)$/.test(location.hostname) || location.protocol === 'file:';
+  const whyText = () => why === 'claude'
+    ? `Les comptes ne marchent pas sur claude.ai. Va sur le site du jeu : ${SITE}`
+    : why === 'bloque'
+      ? 'Le jeu n’arrive pas à joindre le serveur des comptes. Sur Opera : clique sur l’icône bouclier à gauche de l’adresse et désactive le bloqueur de pubs/traqueurs pour ce site, puis recharge la page (F5). Sinon, vérifie ta connexion internet.'
+      : `Le serveur des comptes a répondu une erreur (${why}). Réessaie dans un moment.`;
+
+  // --- petit client HTTP pour Supabase ---
+  const H = tok => ({'apikey': LB_KEY, 'Authorization': 'Bearer ' + (tok || LB_KEY), 'Content-Type': 'application/json'});
+  async function api(path, opt = {}){
+    let res;
+    try { res = await fetch(LB_URL + path, opt); } catch (e) { return {ok: false, status: 0, data: null, error: 'réseau'}; }
+    const txt = await res.text(); let data = null;
+    try { data = txt ? JSON.parse(txt) : null; } catch (e) { data = txt; }
+    return {ok: res.ok, status: res.status, data, error: res.ok ? null : String((data && (data.msg || data.message || data.error_description || data.error_code || data.error)) || ('HTTP ' + res.status))};
+  }
+  function storeSess(d){
+    sess = {access_token: d.access_token, refresh_token: d.refresh_token, expires_at: Date.now() + (d.expires_in || 3600) * 1000, user: d.user};
+    try { localStorage.setItem(AUTH_KEY, JSON.stringify(sess)); } catch (e) {}
+  }
+  function clearSess(){ sess = null; try { localStorage.removeItem(AUTH_KEY); } catch (e) {} }
+  async function token(){
+    if (!sess) return null;
+    if (Date.now() > sess.expires_at - 60000){
+      const r = await api('/auth/v1/token?grant_type=refresh_token', {method: 'POST', headers: H(), body: JSON.stringify({refresh_token: sess.refresh_token})});
+      if (!r.ok){ if (r.status){ clearSess(); uid = null; render(); } return null; }
+      storeSess(r.data);
+    }
+    return sess.access_token;
+  }
+  async function rest(path, opt = {}){
+    const t = await token();
+    if (!t) return {ok: false, status: 401, error: 'non connecté'};
+    return api('/rest/v1/' + path, {...opt, headers: {...H(t), ...(opt.headers || {})}});
+  }
+
   async function init(){
-    if (state !== 'off') return;
-    if (!LB_URL || !LB_KEY){ state = 'nocfg'; render(); return; }
+    if (state === 'loading' || state === 'ready') return;
     state = 'loading'; render();
+    if (!onSite()){ state = 'error'; why = 'claude'; render(); return; }
+    const p = await api('/rest/v1/scores?select=user_id&limit=1', {headers: H()});
+    if (!p.ok){ state = 'error'; why = p.status === 0 ? 'bloque' : String(p.status); render(); return; }
+    state = 'ready';
     try {
-      if (!window.supabase){
-        await new Promise((ok, ko) => { const s = document.createElement('script'); s.src = 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.js'; s.onload = ok; s.onerror = ko; document.head.appendChild(s); });
-      }
-      sb = window.supabase.createClient(LB_URL, LB_KEY, {auth: {persistSession: true, autoRefreshToken: true, storageKey: 'badinterCasino_auth'}});
-      // test de connexion : sur claude.ai les connexions vers la base sont bloquées
-      const probe = await sb.from('scores').select('user_id').limit(1);
-      if (probe.error && /fetch|network|load failed/i.test(probe.error.message || '')) throw new Error('bloqué');
-      state = 'ready';
-      const {data: {session}} = await sb.auth.getSession();
-      if (session) await onLogin(session.user, false);
-      render(); refresh();
-    } catch (e) { state = 'error'; render(); }
+      const s = JSON.parse(localStorage.getItem(AUTH_KEY) || 'null');
+      if (s && s.refresh_token){ sess = s; const t = await token(); if (t && sess && sess.user) await onLogin(sess.user, false); }
+    } catch (e) {}
+    render(); refresh();
   }
   // Après connexion : on récupère la partie en ligne (la plus récente gagne)
   async function onLogin(user, isNew){
@@ -2705,59 +2737,67 @@ const LB = (() => {
     S.pseudo = (user.user_metadata && user.user_metadata.pseudo) || S.pseudo;
     if (isNew){ S.owner = uid; save(); await cloudSave(true); await sendScore(true); }
     else {
-      const {data, error} = await sb.from('saves').select('data').eq('user_id', uid).maybeSingle();
-      if (!error && data && data.data && typeof data.data.pts === 'number'){
-        if (S.owner !== uid || (data.data.last || 0) > (S.last || 0)){
-          const pseudo = S.pseudo; applyData(data.data); S.owner = uid; S.pseudo = pseudo; save(); refreshAll();
+      const r = await rest('saves?select=data&user_id=eq.' + uid);
+      const row = r.ok && Array.isArray(r.data) ? r.data[0] : null;
+      if (row && row.data && typeof row.data.pts === 'number'){
+        if (S.owner !== uid || (row.data.last || 0) > (S.last || 0)){
+          const pseudo = S.pseudo; applyData(row.data); S.owner = uid; S.pseudo = pseudo; save(); refreshAll();
           toast('Partie récupérée', `Bon retour ${S.pseudo} ! Ta partie en ligne est chargée.`, 'var(--green)');
         }
-      } else if (!error){ S.owner = uid; save(); await cloudSave(true); }
+      } else if (r.ok){ S.owner = uid; save(); await cloudSave(true); }
     }
     S.owner = uid;
     Bad.say(`Connecté en tant que ${S.pseudo} ✅ Ta partie est sauvegardée en ligne automatiquement.`, true);
     render();
   }
-  async function cloudSave(force){
+  async function cloudSave(force, keepalive){
     if (state !== 'ready' || !uid) return;
     if (!force && Date.now() - lastCloud < 30000) return;
     lastCloud = Date.now();
     save();
-    const {error} = await sb.from('saves').upsert({user_id: uid, data: S, updated_at: new Date().toISOString()});
-    $('#accSync').textContent = error ? '⚠️ Sauvegarde en ligne impossible pour l’instant (ta partie reste sauvegardée sur cet ordinateur).' : `☁️ Sauvegardé en ligne à ${new Date().toLocaleTimeString('fr-FR', {hour: '2-digit', minute: '2-digit', second: '2-digit'})}`;
+    const body = JSON.stringify({user_id: uid, data: S, updated_at: new Date().toISOString()});
+    const r = await rest('saves', {method: 'POST', headers: {'Prefer': 'resolution=merge-duplicates,return=minimal'}, body, keepalive: !!keepalive && body.length < 60000});
+    $('#accSync').textContent = r.ok ? `☁️ Sauvegardé en ligne à ${new Date().toLocaleTimeString('fr-FR', {hour: '2-digit', minute: '2-digit', second: '2-digit'})}` : '⚠️ Sauvegarde en ligne impossible pour l’instant (ta partie reste sauvegardée sur cet ordinateur).';
   }
   async function sendScore(force){
     if (state !== 'ready' || !uid || !S.pseudo) return;
     if (!force && Date.now() - lastScore < 60000) return;
     lastScore = Date.now();
-    await sb.from('scores').upsert({user_id: uid, name: S.pseudo, fortune: Math.floor(S.pts + S.liv.bal), sky_best: Math.min(1000, Math.round(S.skyBest * 100) / 100), tower_best: S.towerBest, stars: S.stars, updated_at: new Date().toISOString()});
+    await rest('scores', {method: 'POST', headers: {'Prefer': 'resolution=merge-duplicates,return=minimal'},
+      body: JSON.stringify({user_id: uid, name: S.pseudo, fortune: Math.floor(S.pts + S.liv.bal), sky_best: Math.min(1000, Math.round(S.skyBest * 100) / 100), tower_best: S.towerBest, stars: S.stars, updated_at: new Date().toISOString()})});
   }
   async function refresh(){
     if (state !== 'ready') return render();
-    const {data, error} = await sb.from('scores').select('user_id,name,fortune,sky_best,tower_best,stars').order(cat, {ascending: false}).limit(50);
-    if (error){ $('#lbStatus').textContent = 'Impossible de charger le classement pour l’instant.'; return; }
-    rows = data || []; render();
+    const r = await api(`/rest/v1/scores?select=user_id,name,fortune,sky_best,tower_best,stars&order=${cat}.desc&limit=50`, {headers: H()});
+    if (!r.ok){ $('#lbStatus').textContent = 'Impossible de charger le classement pour l’instant.'; return; }
+    rows = Array.isArray(r.data) ? r.data : []; render();
   }
   async function submit(e){
     e.preventDefault();
     if (busyAcc) return;
-    if (state !== 'ready'){ accMsg('Les comptes ne sont pas disponibles ici. Va sur le site du jeu : https://ryzer34k.github.io/badinter-casino/', true); return; }
+    if (state === 'error'){ accMsg(whyText(), true); state = 'off'; init(); return; }
+    if (state !== 'ready'){ accMsg('Connexion au serveur en cours, réessaie dans une seconde…', true); return; }
     const name = $('#accName').value.trim().replace(/\s+/g, ' '), pass = $('#accPass').value, s = slug(name);
     if (!NAME_RE.test(name) || s.length < 2){ accMsg('Pseudo invalide : entre 2 et 16 caractères (lettres, chiffres, espaces, - et _).', true); return; }
     if (pass.length < 6){ accMsg('Le mot de passe doit faire au moins 6 caractères.', true); return; }
+    if (mode === 'signup' && pass !== $('#accPass2').value){ accMsg('Les deux mots de passe ne sont pas pareils.', true); return; }
     busyAcc = true; $('#accGo').disabled = true; accMsg('Un instant…');
     try {
       if (mode === 'signup'){
-        if (pass !== $('#accPass2').value){ accMsg('Les deux mots de passe ne sont pas pareils.', true); return; }
-        const {data, error} = await sb.auth.signUp({email: s + DOMAIN, password: pass, options: {data: {pseudo: name}}});
-        if (error){ accMsg(/registered|exists/i.test(error.message) ? 'Ce pseudo est déjà pris, choisis-en un autre.' : /fetch|network/i.test(error.message) ? 'Pas de connexion au serveur. Les comptes marchent sur le site du jeu : https://ryzer34k.github.io/badinter-casino/' : 'Création impossible : ' + error.message, true); return; }
-        if (!data.session){ accMsg('Compte créé, mais la connexion automatique n’a pas marché. Essaie de te connecter.', true); return; }
-        S.pseudo = name;
-        await onLogin(data.user, true);
+        const r = await api('/auth/v1/signup', {method: 'POST', headers: H(), body: JSON.stringify({email: s + DOMAIN, password: pass, data: {pseudo: name}})});
+        if (!r.ok){
+          accMsg(r.status === 0 ? whyText() : /already|exists|registered/i.test(r.error) ? 'Ce pseudo est déjà pris, choisis-en un autre.' : /password/i.test(r.error) ? 'Mot de passe refusé : choisis-en un plus long ou plus compliqué.' : 'Création impossible : ' + r.error, true);
+          return;
+        }
+        if (!r.data || !r.data.access_token){ accMsg('Compte créé, mais la connexion automatique n’a pas marché. Clique sur « Se connecter ».', true); return; }
+        storeSess(r.data); S.pseudo = name;
+        await onLogin(r.data.user, true);
         toast('Compte créé 🎉', `Bienvenue ${name} ! Ta partie actuelle est maintenant sauvegardée en ligne.`, 'var(--green)');
       } else {
-        const {data, error} = await sb.auth.signInWithPassword({email: s + DOMAIN, password: pass});
-        if (error){ accMsg(/fetch|network/i.test(error.message) ? 'Pas de connexion au serveur. Les comptes marchent sur le site du jeu : https://ryzer34k.github.io/badinter-casino/' : 'Pseudo ou mot de passe incorrect.', true); return; }
-        await onLogin(data.user, false);
+        const r = await api('/auth/v1/token?grant_type=password', {method: 'POST', headers: H(), body: JSON.stringify({email: s + DOMAIN, password: pass})});
+        if (!r.ok){ accMsg(r.status === 0 ? whyText() : 'Pseudo ou mot de passe incorrect.', true); return; }
+        storeSess(r.data);
+        await onLogin(r.data.user, false);
         toast('Connecté', `Content de te revoir ${S.pseudo} !`, 'var(--green)');
       }
       $('#accPass').value = ''; $('#accPass2').value = ''; accMsg('');
@@ -2766,8 +2806,8 @@ const LB = (() => {
   }
   async function logout(){
     await cloudSave(true);
-    await sb.auth.signOut();
-    uid = null;
+    if (sess) await api('/auth/v1/logout', {method: 'POST', headers: H(sess.access_token)});
+    clearSess(); uid = null;
     applyData(fresh()); S.tr = {prices: null, pos: {}}; save(); refreshAll();
     toast('Déconnecté', 'Ta partie est gardée en ligne. Reconnecte-toi pour la retrouver.', 'var(--gold)');
     render(); refresh();
@@ -2778,9 +2818,8 @@ const LB = (() => {
     $('#accOut').hidden = !!uid; $('#accIn').hidden = !uid;
     if (uid) $('#accWho').textContent = S.pseudo;
     const list = $('#lbList');
-    if (state === 'nocfg') list.innerHTML = '<div class="small">Le classement en ligne arrive bientôt sur le site du jeu !</div>';
-    else if (state === 'loading') list.innerHTML = '<div class="small">Connexion au classement…</div>';
-    else if (state === 'error') list.innerHTML = '<div class="small">Le classement et les comptes ne marchent pas ici. Ils marchent sur le site du jeu : https://ryzer34k.github.io/badinter-casino/</div>';
+    if (state === 'loading' || state === 'off') list.innerHTML = '<div class="small">Connexion au classement…</div>';
+    else if (state === 'error'){ list.innerHTML = ''; const d = document.createElement('div'); d.className = 'small'; d.textContent = whyText(); list.appendChild(d); }
     else if (!rows.length) list.innerHTML = '<div class="small">Personne dans le classement pour l’instant. Crée un compte pour être le premier !</div>';
     else {
       list.innerHTML = '';
@@ -2795,6 +2834,7 @@ const LB = (() => {
     }
     $('#lbStatus').textContent = state === 'ready' ? (uid ? `Tu apparais sous le pseudo « ${S.pseudo} ». Tes scores sont envoyés toutes les minutes.` : 'Connecte-toi ou crée un compte pour apparaître dans le classement.') : '';
     $('#lbMine').innerHTML = `<dt>Fortune (solde + livret)</dt><dd>${M(S.pts + S.liv.bal)}</dd><dt>Gratte-ciel</dt><dd>×${fx(S.skyBest)}</dd><dt>Badi’Tour</dt><dd>${S.towerBest} étages</dd><dt>Étoiles</dt><dd>${S.stars} ★</dd>`;
+    if (state === 'error' && !uid) accMsg(whyText(), true);
   }
   $('#accMode').addEventListener('click', e => {
     const b = e.target.closest('button'); if (!b) return;
@@ -2802,14 +2842,14 @@ const LB = (() => {
     $('#accPass2Wrap').hidden = mode !== 'signup';
     $('#accGo').textContent = mode === 'signup' ? 'Créer mon compte' : 'Se connecter';
     $('#accPass').autocomplete = mode === 'signup' ? 'new-password' : 'current-password';
-    accMsg('');
+    if (state !== 'error') accMsg('');
   });
   $('#accForm').addEventListener('submit', submit);
   $('#accLogout').onclick = logout;
   $('#accSaveNow').onclick = async () => { await cloudSave(true); toast('Sauvegardé', 'Ta partie est enregistrée en ligne.', 'var(--green)'); };
   $('#lbCat').addEventListener('click', e => { const b = e.target.closest('button'); if (!b) return; cat = b.dataset.c; $$('#lbCat button').forEach(x => x.setAttribute('aria-pressed', x === b)); refresh(); });
-  $('#lbRefresh').onclick = () => { sendScore(true); refresh(); };
-  document.addEventListener('visibilitychange', () => { if (document.hidden) cloudSave(true); });
+  $('#lbRefresh').onclick = () => { if (state === 'error'){ state = 'off'; init(); return; } sendScore(true); refresh(); };
+  document.addEventListener('visibilitychange', () => { if (document.hidden) cloudSave(true, true); });
   return {init, open: () => { init(); refresh(); render(); }, tick: () => { cloudSave(false); sendScore(false); }, render, cloudSave: () => cloudSave(true), loggedIn: () => !!uid};
 })();
 
@@ -3055,7 +3095,7 @@ LB.init();
   $('#wLogin').onclick = () => goAcc('login');
   $('#wSignup').onclick = () => goAcc('signup');
   $('#wGuest').onclick = close;
-  let hasAuth = false; try { hasAuth = !!localStorage.getItem('badinterCasino_auth'); } catch (e) {}
+  let hasAuth = false; try { hasAuth = !!localStorage.getItem('badinterCasino_session'); } catch (e) {}
   if (!seen && !(LB_URL && hasAuth)) w.hidden = false;
 })();
 requestAnimationFrame(frame);
